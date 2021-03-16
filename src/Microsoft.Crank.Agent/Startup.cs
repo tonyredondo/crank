@@ -4106,6 +4106,27 @@ namespace Microsoft.Crank.Agent
 
                 source.Dynamic.All += (TraceEvent eventData) => 
                 {
+                    //Log.WriteLine(string.Empty);
+                    //Log.WriteLine("******************* TraceEvent");
+                    //if (eventData is null)
+                    //{
+                    //    Log.WriteLine("(null)");
+                    //} 
+                    //else
+                    //{
+                    //    Log.WriteLine(eventData.ProviderName);
+                    //    Log.WriteLine(eventData.EventName);
+                    //    string[] names = eventData.PayloadNames;
+                    //    if (names != null)
+                    //    {
+                    //        foreach (var name in names)
+                    //        {
+                    //            Log.WriteLine(string.Format(" {0} = {1}", name ?? "(null)", eventData.PayloadByName(name) ?? "(null)"));
+                    //        }
+                    //    }
+                    //}
+
+
                     // We only track event counters for System.Runtime
                     if (eventData.ProviderName == "Benchmarks")
                     {
@@ -4137,48 +4158,57 @@ namespace Microsoft.Crank.Agent
                     }
 
                     // We only track event counters
-                    if (eventData.EventName.Equals("EventCounters"))
+                    if (eventData.EventName.Equals("EventCounters") && eventData.PayloadNames?.Length > 0 && eventData.PayloadNames[0] != string.Empty)
                     {
-                        var payloadVal = (IDictionary<string, object>)(eventData.PayloadValue(0));
-                        var payloadFields = (IDictionary<string, object>)(payloadVal["Payload"]);
-
-                        var counterName = payloadFields["Name"].ToString();
-
-                        // Skip value if the provider is unknown
-                        if (!providerNames.Contains(eventData.ProviderName, StringComparer.OrdinalIgnoreCase))
+                        if (eventData.PayloadValue(0) is IDictionary<string, object> payloadVal)
                         {
-                            return;
+                            if (payloadVal != null)
+                            {
+                                var payloadFields = (IDictionary<string, object>)(payloadVal["Payload"]);
+
+                                var counterName = payloadFields["Name"].ToString();
+
+                                // Skip value if the provider is unknown
+                                if (!providerNames.Contains(eventData.ProviderName, StringComparer.OrdinalIgnoreCase))
+                                {
+                                    return;
+                                }
+
+                                // TODO: optimize by pre-computing a searchable structure
+                                var counter = job.Counters.FirstOrDefault(x => x.Provider.Equals(eventData.ProviderName, StringComparison.OrdinalIgnoreCase) && x.Name.Equals(counterName, StringComparison.OrdinalIgnoreCase));
+
+                                if (counter == null)
+                                {
+                                    // The counter is not tracked
+                                    return;
+                                }
+
+                                var measurement = new Measurement();
+
+                                measurement.Name = counter.Measurement;
+
+                                switch (payloadFields["CounterType"])
+                                {
+                                    case "Sum":
+                                        measurement.Value = payloadFields["Increment"];
+                                        break;
+                                    case "Mean":
+                                        measurement.Value = payloadFields["Mean"];
+                                        break;
+                                    default:
+                                        Log.WriteLine($"Unknown CounterType: {payloadFields["CounterType"]}");
+                                        break;
+                                }
+
+                                measurement.Timestamp = eventData.TimeStamp;
+
+                                job.Measurements.Enqueue(measurement);
+                            }
                         }
-
-                        // TODO: optimize by pre-computing a searchable structure
-                        var counter = job.Counters.FirstOrDefault(x => x.Provider.Equals(eventData.ProviderName, StringComparison.OrdinalIgnoreCase) && x.Name.Equals(counterName, StringComparison.OrdinalIgnoreCase));
-
-                        if (counter == null)
+                        else if (eventData.PayloadValue(0) is string payloadValueString)
                         {
-                            // The counter is not tracked
-                            return;
+                            Log.WriteLine(string.Format("PayloadValueString = {0}", payloadValueString));
                         }
-
-                        var measurement = new Measurement();
-
-                        measurement.Name = counter.Measurement;
-
-                        switch (payloadFields["CounterType"])
-                        {
-                            case "Sum":
-                                measurement.Value = payloadFields["Increment"];
-                                break;
-                            case "Mean":
-                                measurement.Value = payloadFields["Mean"];
-                                break;
-                            default:
-                                Log.WriteLine($"Unknown CounterType: {payloadFields["CounterType"]}");
-                                break;
-                        }
-
-                        measurement.Timestamp = eventData.TimeStamp;
-
-                        job.Measurements.Enqueue(measurement);
                     }
                 };
 
@@ -4201,6 +4231,8 @@ namespace Microsoft.Crank.Agent
                     }
                 }
             });
+
+            _ = streamTask.ContinueWith(t => Log.WriteLine(string.Format("streamTask exited - {0}", t.Exception?.ToString() ?? "no exception")));
 
             var stopTask = Task.Run(async () =>
             {
